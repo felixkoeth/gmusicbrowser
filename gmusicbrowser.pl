@@ -5982,10 +5982,21 @@ sub ScanFolder
 	{	($dir,my $file)=splitpath($dir);
 		@files=($file) if $file;
 	}
+
+	
+	
+	
 	else {warn "ScanFolder: can't find $dir\n"}
 	#my @toadd;
-	for my $file (@files)
+	
+	my $ignore_file = any { $_ eq ".ignoregm" } @files;
+	if(!$ignore_file)
+	{
+		for my $file (@files)
+	
+	#for my $file (@files)
 	{	next if $file=~m#^\.#;		# skip . .. and hidden files/folders
+		
 		my $path_file=$dir.SLASH.$file;
 		#if (-d $path_file) { push @ToScan,$path_file; next; }
 		if (-d $path_file)
@@ -6011,11 +6022,13 @@ sub ScanFolder
 			push @ToAdd_Files, $path_file;
 		}
 	}
+}
 	unless (@ToScan)
 	{	AbortScan();
 	}
 	&launchIdleLoop unless $IdleLoop;
 }
+
 
 sub CheckProgress_cb
 {	my $init=$_[0];
