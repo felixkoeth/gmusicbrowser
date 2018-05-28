@@ -30,16 +30,16 @@ my %Sites=
  {	googlei => [_"google images","http://images.google.com/images?q=%s&imgsz=medium|large", \&parse_googlei, GOOGLE_USER_AGENT],
 	lastfm => ['last.fm',"http://www.last.fm/music/%a/+images", \&parse_lastfm],
 	#discogs => ['discogs.com', "http://api.discogs.com/search?f=xml&type=artists&q=%a", \&parse_discogs],
-	bing =>['bing',"http://www.bing.com/images/search?q=%s", \&parse_bing],
+	bing =>['bing',"http://www.bing.com/images/async?q=%s", \&parse_bing],
 	yahoo =>['yahoo',"http://images.search.yahoo.com/search/images?p=%s&o=js", \&parse_yahoo],
-	ddg => ["DuckDuckGo","https://duckduckgo.com/i.js?q=%s&o=json", \&parse_ddg],
+	ddg => ["DuckDuckGo","https://duckduckgo.com/?q=%s&iax=1&ia=images", \&parse_ddg],
  },
  album =>
  {	googlei => [_"google images","http://images.google.com/images?q=%s&imgsz=medium|large&imgar=ns", \&parse_googlei, GOOGLE_USER_AGENT],
 	googleihi =>[_"google images (hi-res)","http://www.google.com/images?q=%s&imgsz=xlarge|xxlarge&imgar=ns", \&parse_googlei, GOOGLE_USER_AGENT],
 	yahoo =>['yahoo',"http://images.search.yahoo.com/search/images?p=%s&o=js", \&parse_yahoo],
 	bing =>['bing',"http://www.bing.com/images/async?q=%s&qft=+filterui:aspect-square", \&parse_bing],
-	ddg => ["DuckDuckGo","https://duckduckgo.com/i.js?q=%s&o=json", \&parse_ddg],
+	ddg => ["DuckDuckGo","https://duckduckgo.com/?q=%s&iax=1&ia=images", \&parse_ddg],
 	slothradio => ['slothradio', "http://www.slothradio.com/covers/?artist=%a&album=%l", \&parse_sloth],
 	#freecovers => ['freecovers.net', "http://www.freecovers.net/api/search/%s", \&parse_freecovers], #could add /Music+CD but then we'd lose /Soundtrack #API doesn't work anymore
 	#rateyourmusic=> ['rateyourmusic.com', "http://rateyourmusic.com/search?searchterm=%s&searchtype=l",\&parse_rateyourmusic], # urls results in "403 Forbidden"
@@ -269,15 +269,17 @@ sub parse_freecovers #FIXME could use a XML module	#can provide backcover and mo
 	return \@list;
 }
 sub parse_lastfm
-{	my $result=$_[0];
+{	my ($results,$pageurl,$searchcontext)=@_;
+	$searchcontext->{baseurl}||= $pageurl;
 	my @list;
-	while ($result=~m#<a\s+href="/music/[^/]+/\+images/\d+"[^>]+?class="pic".+?<img [^>]+?src="([^"]+)"#gs)
+	while ($results=~m#<a\s+href="/music/[^/]+/\+images/[0-9A-F]+"[^>]+?class="image-list-link"[^<]+<img[^>]+?src="([^"]+)"#gis)
 	{	my $url=my $pre=$1;
-		$url=~s#/\w+/(\d+.jpg)$#/_/$1#; ### /126b/123456.jpg -> /_/123456.jpg
+		$url=~s#/i/u/avatar170s/#/i/u/#;
+		$url.='.jpg';
 		push @list, {url => $url, previewurl =>$pre,};
 	}
 	my $nexturl;
-	$nexturl='http://www.lastfm.com'.$1 if $result=~m#<a href="([^"]+)" class="nextlink">#;
+	$nexturl= $searchcontext->{baseurl}.$1 if $results=~m#<a href="(\?page=\d+)">Next</a>#;
 	return \@list,$nexturl;
 }
 sub parse_sloth
@@ -295,20 +297,17 @@ sub parse_googlei
 	$searchcontext->{baseurl}||= $pageurl;
 	$searchcontext->{pagecount}++;
 	my @list;
-	for my $res (split /<div class="rg_di[^"]*"[^>]*>/, $results)
-	{	next unless $res=~m#(?:\?|&amp;)imgurl=(.*?)&amp;#;
+	for my $res (split /<span class="rg_ilmn[^"]*"[^>]*>/, $results)
+	{	$res=~s/(?<!\\)\\"/\\u0022/g; #escape \" to make extraction simpler, not perfect
+		next unless $res=~m#"ou":"(http[^"]+)"#i;
 		my $url=$1;
-		$url=~s/%([0-9A-Fa-f]{2})/chr hex($1)/gie;
+		#$url=~s/%([0-9A-Fa-f]{2})/chr hex($1)/gie;
 		#$searchcontext->{rescount}++;
-		my $preview;
-		$preview=$1 if $res=~m/<img class="rg_i" [^>]*?src="([^"]+)"/;
-		my $desc;
-		if ($res=~m/<div class="rg_meta">[^<]*?"pt":"([^"]+)"/)
-		{	$desc= ::decode_html(Encode::decode('utf8',$1));
-			$desc=~s#</?b>##g;
-		}
-		#warn "$url\n$preview\n$desc\n\n";
-		push @list, {url => $url, previewurl =>$preview, desc => $desc };
+		my $preview= $res=~m/"tu":"([^"]+)"/ ? $1 : undef;
+		my $ref= $res=~m/"ru":"([^"]+)"/ ? $1 : undef;
+		my $desc= $res=~m/"pt":"([^"]+)"/ ? Encode::decode('utf8',$1) : undef;
+		for ($url,$desc,$ref,$preview) { s/\\u([0-9A-F]{4})/chr(hex($1))/eig; } #FIXME maybe use proper json decoding library
+		push @list, {url => $url, previewurl =>$preview, desc => $desc, referer=>$ref };
 	}
 	my $nexturl= $searchcontext->{baseurl}."&ijn=".$searchcontext->{pagecount};
 	$nexturl=undef unless @list;
@@ -321,32 +320,18 @@ sub parse_bing
 	$searchcontext->{baseurl}||= $pageurl;
 	my $seen= $searchcontext->{seen}||= {};
 	my @list;
-	while ($result=~m/<a href="#" ([^>]+)>(?:<img class="img_hid" src2="([^"]+)")?/g)
-	{	my $picdata=$1;
-		my $preview=$2;
-		my %h;
-		$h{$1}=$2 while $picdata=~m/(\w+)="([^"]+)"/g;
-		my $m=$h{m};
-		next unless $m;
-		$m= ::decode_html($m);
-		my $url;
-		$url=$1 if $m=~m/imgurl:"([^"]+)"/;
-		next unless $url;
-		if ($preview)
-		{	$preview= ::decode_html($preview);
-			$preview=~s/w=\d+&h=\d+//; #remove size parameters for the thumbnail to have the largest size
-		}
-		my $desc=$h{t1};
-		if ($desc)
-		{	$desc=Encode::decode('utf8',$desc);
-			$desc=::decode_html($desc);
-		}
-		#warn "$url\n$preview\n$desc\n\n";
+	while ($result=~m/\s+m="([^"]+)"/g)
+	{	my $metadata= ::decode_html(Encode::decode('utf8',$1));
+		#warn $metadata;
+		next unless $metadata=~m/"murl":"([^"]+)"/i;
+		my $url=$1;
+		my $purl= $metadata=~m/"purl":"([^"]+)"/i ? $1 : undef;
+		my $turl= $metadata=~m/"turl":"([^"]+)"/i ? $1 : undef;
 		#if ($seen->{$url}) { warn "result #".(++$searchcontext->{count})." was already found as #".$seen->{$url}."\n" } #DEBUG
 		next if $seen->{$url};
 		$seen->{$url}= ++$searchcontext->{count};
-		push @list, {url => $url, previewurl =>$preview, desc => $desc };
-	#	print "$url\n";
+		push @list, { url=>$url, previewurl=>$turl, referer=>$purl };
+		next;
 	}
 	my $n= ++$searchcontext->{pagecount};
 	my $nexturl= $searchcontext->{baseurl}."&first=".(1+$n*100)."&count=100";
@@ -380,6 +365,14 @@ sub parse_yahoo
 
 sub parse_ddg
 {	my ($result,$pageurl,$searchcontext)=@_;
+	unless ($searchcontext->{vqd})
+	{	#request to i.js don't work without a vqd number, get it from the first page
+		my $vqd= $result=~m/vqd=(\d+)/ ? $1 : 0;
+		my $q= $result=~m/\?q=([^&"]+)[&"]/ ? $1 : 0;
+		my $url= $vqd && $q ? "https://duckduckgo.com/i.js?o=json&q=$q&vqd=$vqd&p=1" : undef;
+		$searchcontext->{vqd}=$vqd;
+		return [],$url,!!$url; #third return paremeter true means get next url even though no results in this query
+	}
 	my (@list,$nexturl);
 	# for some reason next pages return some previous results, use $searchcontext->{seen} to ignore them
 	my $seen= $searchcontext->{seen}||= {};
@@ -415,13 +408,13 @@ sub searchresults_cb
 	warn "Getting results from $self->{url}\n" if $::Verbose;
 	unless (defined $result) { stop($self,_"connection failed."); return; }
 	my $parse= $Sites{$self->{mainfield}}{$self->{site}}[2];
-	my ($list,$nexturl)=$parse->($result,$self->{url},$self->{searchcontext});
+	my ($list,$nexturl,$ignore0)=$parse->($result,$self->{url},$self->{searchcontext});
 	$self->{nexturl}=$nexturl;
 	#$table->set_size_request(110*5,110*int(1+@list/5));
 	push @{$self->{results}}, @$list;
 	my $more= @{$self->{results}} - ($self->{page}+1) * RES_PER_PAGE;
 	$self->{Bnext}->set_sensitive( $more>0 || $nexturl );
-	unless (@{$self->{results}}) { stop($self,_"no matches found, you might want to remove some search terms."); return; }
+	unless ($ignore0 || @{$self->{results}}) { stop($self,_"no matches found, you might want to remove some search terms."); return; }
 	::IdleDo('8_FetchCovers'.$self,100,\&get_next,$self);
 }
 
